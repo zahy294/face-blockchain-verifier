@@ -17,7 +17,7 @@
    - [Executing the `verify` Command](#3-executing-the-verify-command-on-chain-audit)
 7. [Smart Contract Interface (`DataRegistry.sol`)](#-smart-contract-interface-dataregistrysol)
 8. [Known Limitations & Edge Cases](#-known-limitations--edge-cases)
-9. [75-Second Evaluator Presentation & Run-of-Show](#-75-second-evaluator-presentation--run-of-show)
+
 
 ---
 
