@@ -1,0 +1,12 @@
+{
+  "0x594a2ea7294af0c4a69962ef2ba72b1a9a784c75481b6580054929fe194020c0": {
+    "fingerprint": "0x594a2ea7294af0c4a69962ef2ba72b1a9a784c75481b6580054929fe194020c0",
+    "tx_hash": "0xa0d52560d2b05a23f10e7af0843de358e40e21aa19cd5dec39ea5ded1a233793",
+    "block_number": 5840220,
+    "network": "Ethereum Sepolia (Testnet)",
+    "timestamp": 1788785515,
+    "submitter": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "metadata_uri": "ipfs://provenance/x_twitter/cc1a34fc516d3f48",
+    "is_valid": true
+  }
+}

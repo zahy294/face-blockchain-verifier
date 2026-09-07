@@ -1,0 +1,22 @@
+# Environment variables
+.env
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Foundry artifacts & cache
+out/
+cache/
+broadcast/
+
+# Temporary crop files
+face_crop_*.jpg
