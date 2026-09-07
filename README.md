@@ -275,43 +275,6 @@ Use this exact timing, visual cue sheet, and speaking script when producing the 
 +---------------+----------------------------------------------------+---------------------+
 ```
 
-### 🎙️ Exact Voiceover Script & Visual Timeline
-
-#### **[00:00 - 00:15] Scene 1: Introduction & Architecture Setup**
-- **Visual**: Screen recording showing terminal window split into two panes. The left pane shows the local Anvil blockchain node running with instant finality. The right pane shows project root directory.
-- **Voiceover**:
-  > *"Welcome. This is the Face Blockchain Verifier—a decentralized provenance toolchain that binds computer vision face landmark extraction with EVM smart contract notarization to guarantee image authenticity."*
-
----
-
-#### **[00:15 - 00:35] Scene 2: Automated Sample Sourcing & Fingerprinting**
-- **Visual**: In the right pane, type and execute `python data/setup_sample.py`. Show the 2.29 MB verified portrait download completing and saving to `data/test_face.jpg`. Briefly open or display the image info.
-- **Voiceover**:
-  > *"To ensure immediate, reproducible evaluation without manual asset sourcing, our automated setup script provisions a verified, publicly indexed portrait. Our pipeline ingests this portrait, aligns the facial landmarks with MediaPipe, and derives a deterministic 32-byte Keccak-256 fingerprint."*
-
----
-
-#### **[00:35 - 00:55] Scene 3: Pipeline Execution & On-Chain Notarization**
-- **Visual**: Run `python -m src.cli run --image data/test_face.jpg --metadata-uri "https://arweave.net/sample-face-metadata"`. Show the transaction hashing, Anvil mining the block on the left pane, and receipt output in the right terminal.
-- **Voiceover**:
-  > *"Running the notarization pipeline broadcasts the cryptographic hash along with provenance metadata to our `DataRegistry` smart contract on local Anvil. Notice the instant finality, zero gas cost, and structured receipt with block timestamp."*
-
----
-
-#### **[00:55 - 01:15] Scene 4: Third-Party Verification Audit**
-- **Visual**: Type and execute `python -m src.cli verify --image data/test_face.jpg`. Highlight the rich formatted verification summary card showing green `[VERIFIED]`, Submitter Address, Timestamp, and Metadata URI.
-- **Voiceover**:
-  > *"Now, any auditor or platform can execute the verify command. The CLI queries the immutable smart contract mapping, confirming the image is genuine, unaltered, and submitted by an authenticated wallet at an exact block timestamp."*
-
----
-
-#### **[01:15 - 01:25] Scene 5: Tamper Detection & Conclusion**
-- **Visual**: Show a modified/tampered image failing verification with `[UNREGISTERED / TAMPERED]`. Display project repo link.
-- **Voiceover**:
-  > *"If even a single pixel is altered, verification fails immediately. Face Blockchain Verifier delivers zero-trust, verifiable authenticity for digital media. Thank you."*
-
----
-
 ## 👥 Authors & License
 - **License**: MIT
 - **QA & Technical Documentation Lead**: Automated Evaluation Suite
