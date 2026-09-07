@@ -3,8 +3,10 @@ import logging
 import os
 import urllib.parse
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Union
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple, Union
 
+import cv2
+import numpy as np
 import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -16,6 +18,19 @@ from tenacity import (
 )
 from web3 import Web3
 
+try:
+    from src.exceptions import (
+        APIKeyMissingError,
+        NoSocialMatchFoundError,
+        SocialSearchError,
+    )
+except ImportError:
+    from exceptions import (
+        APIKeyMissingError,
+        NoSocialMatchFoundError,
+        SocialSearchError,
+    )
+
 # Setup logger
 logger = logging.getLogger(__name__)
 
@@ -23,12 +38,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 # Custom Exceptions
 # ---------------------------------------------------------
-class RateLimitError(Exception):
+class RateLimitError(SocialSearchError):
     """Raised when SerpApi returns HTTP 429 Too Many Requests."""
     pass
 
 
-class SerpApiError(Exception):
+class SerpApiError(SocialSearchError):
     """Raised when SerpApi returns an unexpected error response."""
     pass
 
@@ -37,7 +52,7 @@ class SerpApiError(Exception):
 # Pydantic Models
 # ---------------------------------------------------------
 class SocialMatch(BaseModel):
-    """Represents a matching social media post."""
+    """Represents a matching social media post or top web visual match."""
     platform: str
     post_url: str
     title: str
@@ -49,6 +64,72 @@ class SearchResult(BaseModel):
     success: bool
     message: str
     matches: List[SocialMatch] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------
+# Image Compression & Resizing Helper
+# ---------------------------------------------------------
+def compress_and_resize_image(
+    image_input: Union[str, Path, bytes, BinaryIO],
+    max_dim: int = 800,
+    quality: int = 85,
+) -> Tuple[str, bytes]:
+    """
+    Ensures image is resized (max dimension <= max_dim) and compressed (JPEG quality)
+    to be well under SerpApi's 500 KB upload limit.
+
+    :param image_input: File path, raw bytes, or file-like binary stream.
+    :param max_dim: Maximum dimension (width or height) in pixels.
+    :param quality: JPEG compression quality (1-100).
+    :return: Tuple of (filename, compressed_jpeg_bytes).
+    """
+    filename = "face_crop.jpg"
+    image = None
+
+    if isinstance(image_input, (str, Path)):
+        path = Path(image_input)
+        if not path.is_file():
+            raise FileNotFoundError(f"Image file not found: {path}")
+        filename = path.name
+        image = cv2.imread(str(path))
+        if image is None:
+            with open(path, "rb") as f:
+                raw_bytes = f.read()
+            image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+    elif isinstance(image_input, bytes):
+        raw_bytes = image_input
+        image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+    elif hasattr(image_input, "read"):
+        raw_bytes = image_input.read()
+        filename = getattr(image_input, "name", "face_crop.jpg")
+        image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+    else:
+        raise TypeError("image_input must be a file path, bytes, or file-like binary stream.")
+
+    if image is None or image.size == 0:
+        raise ValueError("Failed to decode image for upload.")
+
+    h, w = image.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    success, buffer = cv2.imencode(".jpg", image, encode_params)
+    if not success:
+        raise ValueError("Failed to encode compressed JPEG image.")
+
+    compressed_bytes = buffer.tobytes()
+
+    # Safety check: ensure well under 500 KB limit (500 * 1024 = 512,000 bytes)
+    if len(compressed_bytes) > 480 * 1024:
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 65]
+        success, buffer = cv2.imencode(".jpg", image, encode_params)
+        if success:
+            compressed_bytes = buffer.tobytes()
+
+    return filename, compressed_bytes
 
 
 # ---------------------------------------------------------
@@ -103,15 +184,17 @@ class SocialImageSearcher:
         platform_mappings: Optional[Dict[str, str]] = None,
         timeout: int = 30,
     ) -> None:
+        load_dotenv()
         self.api_key = api_key or os.getenv("SERPAPI_KEY")
         self.platform_mappings = platform_mappings or self.DEFAULT_PLATFORMS
         self.timeout = timeout
         self.session = requests.Session()
 
     def _get_api_key(self) -> str:
+        load_dotenv()
         key = self.api_key or os.getenv("SERPAPI_KEY")
         if not key:
-            raise ValueError(
+            raise APIKeyMissingError(
                 "SERPAPI_KEY is not configured. Set SERPAPI_KEY in .env or provide it to SocialImageSearcher."
             )
         return key
@@ -150,22 +233,7 @@ class SocialImageSearcher:
         :return: Extracted image_id string.
         """
         api_key = self._get_api_key()
-
-        if isinstance(image_input, (str, Path)):
-            path = Path(image_input)
-            if not path.is_file():
-                raise FileNotFoundError(f"Image file not found: {path}")
-            with open(path, "rb") as f:
-                image_bytes = f.read()
-            filename = path.name
-        elif isinstance(image_input, bytes):
-            image_bytes = image_input
-            filename = "cropped_face.jpg"
-        elif hasattr(image_input, "read"):
-            image_bytes = image_input.read()
-            filename = getattr(image_input, "name", "cropped_face.jpg")
-        else:
-            raise TypeError("image_input must be a file path, bytes, or file-like binary stream.")
+        filename, image_bytes = compress_and_resize_image(image_input)
 
         files = {"image": (filename, image_bytes, "image/jpeg")}
         data = {"api_key": api_key}
@@ -235,6 +303,7 @@ class SocialImageSearcher:
         """
         Parses visual_matches from Google Lens response, filters out non-matching domains,
         and maps matching items to their corresponding social network names.
+        If no strict social link is found, surfaces the top web visual match.
 
         :param lens_data: JSON response dict from Google Lens search.
         :return: List of filtered SocialMatch instances.
@@ -254,7 +323,7 @@ class SocialImageSearcher:
 
             platform = self._match_platform(post_url)
             if not platform:
-                # Discard non-matching domain
+                # Discard non-matching domain for strict social list
                 continue
 
             title = item.get("title") or item.get("source") or platform
@@ -274,30 +343,53 @@ class SocialImageSearcher:
                 )
             )
 
-        return social_matches
+        if social_matches:
+            return social_matches
+
+        # If no strict social link is found, surface the top web visual match
+        for item in visual_matches:
+            if not isinstance(item, dict):
+                continue
+
+            post_url = item.get("link") or item.get("url") or ""
+            if not post_url:
+                continue
+
+            source_name = item.get("source")
+            if not source_name:
+                try:
+                    parsed = urllib.parse.urlparse(post_url)
+                    source_name = parsed.netloc or "Web Match"
+                except Exception:
+                    source_name = "Web Match"
+
+            title = item.get("title") or source_name
+            source_image_url = (
+                item.get("thumbnail")
+                or item.get("original")
+                or item.get("image")
+                or item.get("source_icon")
+            )
+
+            return [
+                SocialMatch(
+                    platform=str(source_name).strip(),
+                    post_url=post_url,
+                    title=str(title).strip(),
+                    source_image_url=source_image_url,
+                )
+            ]
+
+        return []
 
     def search(self, image_input: Union[str, Path, bytes, BinaryIO]) -> SearchResult:
         """
-        Uploads image, queries Google Lens, parses matches, and isolates social media posts.
-        Gracefully handles scenarios with zero matches or failures without crashing.
+        Uploads image, queries Google Lens, parses matches, and isolates social or web matches.
+        Gracefully handles scenarios with zero matches or failures without fabricating mock data.
 
         :param image_input: Cropped image file path, raw bytes, or binary stream.
         :return: SearchResult model.
         """
-        if os.getenv("SERPAPI_MOCK") == "1" or os.getenv("MOCK_SEARCH") == "1":
-            return SearchResult(
-                success=True,
-                message="Mock search completed successfully. Found 1 social media match.",
-                matches=[
-                    SocialMatch(
-                        platform="X/Twitter",
-                        post_url="https://x.com/vitalikbuterin/status/1789402948201",
-                        title="Keynote Announcement & Verified Profile Portrait",
-                        source_image_url="https://pbs.twimg.com/media/profile_img.jpg",
-                    )
-                ],
-            )
-
         try:
             image_id = self.upload_image(image_input)
             lens_data = self.query_google_lens(image_id)
@@ -306,16 +398,34 @@ class SocialImageSearcher:
             if not matches:
                 return SearchResult(
                     success=True,
-                    message="Search completed successfully. Zero social media matches found.",
+                    message="Search completed successfully. Zero social matches found.",
                     matches=[],
                 )
 
             return SearchResult(
                 success=True,
-                message=f"Search completed successfully. Found {len(matches)} social media match(es).",
+                message=f"Search completed successfully. Found {len(matches)} match(es).",
                 matches=matches,
             )
 
+        except APIKeyMissingError as e:
+            return SearchResult(
+                success=False,
+                message=str(e),
+                matches=[],
+            )
+        except RateLimitError as e:
+            return SearchResult(
+                success=False,
+                message=f"SerpApi rate limit error: {str(e)}",
+                matches=[],
+            )
+        except SerpApiError as e:
+            return SearchResult(
+                success=False,
+                message=f"SerpApi error: {str(e)}",
+                matches=[],
+            )
         except Exception as e:
             logger.debug(f"Error executing social image search: {e}")
             return SearchResult(
@@ -331,7 +441,7 @@ class SocialImageSearcher:
 if __name__ == "__main__":
     import sys
 
-    load_dotenv()
+    load_dotenv(override=True)
     api_key = os.getenv("SERPAPI_KEY")
 
     print("=" * 60)
@@ -379,49 +489,65 @@ if __name__ == "__main__":
         print(f"  [{status}] {url} -> {matched} (expected: {expected})")
         assert matched == expected, f"Domain mapping assertion failed for {url}"
 
-    # 3. Verify parser with mock Google Lens response
-    mock_lens_response = {
+    # 3. Verify parser with social Google Lens response
+    test_lens_response = {
         "visual_matches": [
             {
                 "position": 1,
                 "title": "Alice on X: 'Excited about the conference!'",
                 "link": "https://twitter.com/alice/status/12345",
-                "thumbnail": "https://serpapi.com/mock_thumb1.jpg",
+                "thumbnail": "https://serpapi.com/thumb1.jpg",
                 "source": "Twitter",
             },
             {
                 "position": 2,
                 "title": "Random Blog Post",
                 "link": "https://randomblog.com/post/999",
-                "thumbnail": "https://serpapi.com/mock_thumb2.jpg",
+                "thumbnail": "https://serpapi.com/thumb2.jpg",
                 "source": "RandomBlog",
             },
             {
                 "position": 3,
                 "title": "Bob's Instagram Post",
                 "link": "https://www.instagram.com/p/Cz98765/",
-                "thumbnail": "https://serpapi.com/mock_thumb3.jpg",
+                "thumbnail": "https://serpapi.com/thumb3.jpg",
                 "source": "Instagram",
             },
             {
                 "position": 4,
                 "title": "Reddit Thread Discussion",
                 "link": "https://old.reddit.com/r/web3/comments/xyz123",
-                "thumbnail": "https://serpapi.com/mock_thumb4.jpg",
+                "thumbnail": "https://serpapi.com/thumb4.jpg",
                 "source": "Reddit",
             },
         ]
     }
 
-    parsed_matches = searcher.parse_visual_matches(mock_lens_response)
-    print("\n[Mock Visual Matches Parsing Verification]")
-    print(f"  Input matches count:   {len(mock_lens_response['visual_matches'])}")
+    parsed_matches = searcher.parse_visual_matches(test_lens_response)
+    print("\n[Visual Matches Parsing Verification]")
+    print(f"  Input matches count:   {len(test_lens_response['visual_matches'])}")
     print(f"  Filtered social count: {len(parsed_matches)}")
     for idx, match in enumerate(parsed_matches, 1):
         print(f"    Match #{idx}: Platform={match.platform}, Title={match.title}, URL={match.post_url}")
     assert len(parsed_matches) == 3, f"Expected 3 social media matches, got {len(parsed_matches)}"
 
-    # 4. Check API Key configuration for live tests
+    # 4. Verify web fallback if no strict social match
+    web_lens_response = {
+        "visual_matches": [
+            {
+                "position": 1,
+                "title": "Alan Turing - Wikipedia",
+                "link": "https://en.wikipedia.org/wiki/Alan_Turing",
+                "source": "Wikipedia",
+            }
+        ]
+    }
+    web_matches = searcher.parse_visual_matches(web_lens_response)
+    assert len(web_matches) == 1
+    assert web_matches[0].platform == "Wikipedia"
+    assert web_matches[0].post_url == "https://en.wikipedia.org/wiki/Alan_Turing"
+
+    # 5. Check API Key configuration for live tests
     print("\n[SerpApi Live Integration Status]")
     if not api_key:
         print("  SERPAPI_KEY is not set in .env. Live network calls skipped.")

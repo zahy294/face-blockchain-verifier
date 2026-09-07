@@ -20,3 +20,8 @@ broadcast/
 
 # Temporary crop files
 face_crop_*.jpg
+
+
+# Ignore all custom test JPGs
+data/*.jpg
+!data/test_face.jpg

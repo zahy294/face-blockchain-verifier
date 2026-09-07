@@ -2,10 +2,12 @@
 
 import os
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from click.testing import CliRunner
 
 from main import cli
+from src.social_searcher import SearchResult, SocialMatch
 
 
 class TestMainCLI(unittest.TestCase):
@@ -34,23 +36,32 @@ class TestMainCLI(unittest.TestCase):
         self.assertIn("ALERT: NO FACE DETECTED", result.output)
 
     def test_run_missing_api_key_alert(self):
-        # Ensure no mock or live key is set
-        old_mock = os.environ.pop("SERPAPI_MOCK", None)
-        old_key = os.environ.pop("SERPAPI_KEY", None)
-        try:
-            result = self.runner.invoke(cli, ["run", "--image", self.portrait_path])
-            self.assertEqual(result.exit_code, 1)
-            self.assertIn("ALERT: AUTHENTICATION ERROR", result.output)
-        finally:
-            if old_mock:
-                os.environ["SERPAPI_MOCK"] = old_mock
-            if old_key:
-                os.environ["SERPAPI_KEY"] = old_key
+        # Ensure no key is set in env
+        with patch.dict(os.environ, {"SERPAPI_KEY": ""}):
+            with patch("src.social_searcher.load_dotenv"):
+                result = self.runner.invoke(cli, ["run", "--image", self.portrait_path])
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("ALERT: AUTHENTICATION ERROR", result.output)
 
     def test_run_and_verify_lifecycle(self):
-        # 1. Run pipeline in mock mode
-        os.environ["SERPAPI_MOCK"] = "1"
-        try:
+        import time
+        unique_id = int(time.time() * 1000)
+        sample_post_url = f"https://x.com/verified_author/status/{unique_id}"
+        sample_platform = "X/Twitter"
+        sample_match = SocialMatch(
+            platform=sample_platform,
+            post_url=sample_post_url,
+            title="Official Verified Portrait",
+            source_image_url="https://pbs.twimg.com/media/sample.jpg",
+        )
+        mocked_search_result = SearchResult(
+            success=True,
+            message="Search completed successfully. Found 1 match.",
+            matches=[sample_match],
+        )
+
+        with patch("main.SocialImageSearcher.search", return_value=mocked_search_result):
+            # 1. Run pipeline
             run_res = self.runner.invoke(cli, ["run", "--image", self.portrait_path])
             self.assertEqual(run_res.exit_code, 0)
             self.assertIn("PIPELINE INITIATION", run_res.output)
@@ -67,9 +78,9 @@ class TestMainCLI(unittest.TestCase):
                     "--image",
                     self.portrait_path,
                     "--post-url",
-                    "https://x.com/vitalikbuterin/status/1789402948201",
+                    sample_post_url,
                     "--platform",
-                    "X/Twitter",
+                    sample_platform,
                 ],
             )
             self.assertEqual(verify_valid.exit_code, 0)
@@ -85,13 +96,11 @@ class TestMainCLI(unittest.TestCase):
                     "--post-url",
                     "https://x.com/fake_attacker/status/11111",
                     "--platform",
-                    "X/Twitter",
+                    sample_platform,
                 ],
             )
             self.assertEqual(verify_invalid.exit_code, 0)
             self.assertIn("TAMPER ALERT / RECORD NOT FOUND", verify_invalid.output)
-        finally:
-            os.environ.pop("SERPAPI_MOCK", None)
 
 
 if __name__ == "__main__":

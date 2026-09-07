@@ -160,7 +160,7 @@ def run_pipeline(image: str):
             show_lines=True,
         )
         social_table.add_column("Platform", style="bold yellow", width=16)
-        social_table.add_column("Post URL", style="underline blue", width=42)
+        social_table.add_column("Post URL", style="underline blue", overflow="fold", no_wrap=False)
         social_table.add_column("Title", style="white")
 
         for match in search_result.matches:
@@ -223,6 +223,17 @@ def run_pipeline(image: str):
                 padding=(1, 2),
             )
         )
+
+        platform = discovered_post.platform
+        post_url = discovered_post.post_url
+
+        console.print(f"\n[bold cyan]Notarized Platform:[/] {platform}")
+        console.print(f"[bold cyan]Notarized Post URL:[/] {post_url}")
+
+        console.print("\n[bold green]To verify this authentic record on-chain, run:[/bold green]")
+        console.print(f"python main.py verify --image {image} --platform \"{platform}\" --post-url \"{post_url}\"\n")
+        console.print("[bold yellow]To test tamper detection, run:[/bold yellow]")
+        console.print(f"python main.py verify --image {image} --platform \"{platform}\" --post-url \"{post_url}/tampered\"\n")
 
     except InvalidImageError as e:
         print_error_alert("INVALID IMAGE INPUT", str(e), "Verify the image file path, permissions, and image format (.jpg, .png, .jpeg).")

@@ -64,8 +64,105 @@ class FaceCropResult:
         return self.crop_box
 
 
+class _BBox:
+    def __init__(self, xmin: float, ymin: float, width: float, height: float):
+        self.xmin = xmin
+        self.ymin = ymin
+        self.width = width
+        self.height = height
+
+
+class _LocationData:
+    def __init__(self, bbox: _BBox):
+        self.relative_bounding_box = bbox
+
+
+class _Detection:
+    def __init__(self, bbox: _BBox, score: float = 0.95):
+        self.location_data = _LocationData(bbox)
+        self.score = [score]
+
+
+class _DetectionResults:
+    def __init__(self, detections):
+        self.detections = detections
+
+
+class _FallbackFaceDetector:
+    def __init__(self, min_detection_confidence: float = 0.65, model_selection: int = 0):
+        self.min_detection_confidence = min_detection_confidence
+        self.model_selection = model_selection
+        self.task_detector = None
+        self.cascade = None
+        model_path = Path("data/models/face_detector.tflite")
+        if model_path.exists():
+            try:
+                from mediapipe.tasks import python as mp_python
+                from mediapipe.tasks.python import vision as mp_vision
+                base_options = mp_python.BaseOptions(model_asset_path=str(model_path))
+                options = mp_vision.FaceDetectorOptions(
+                    base_options=base_options,
+                    min_detection_confidence=min_detection_confidence,
+                )
+                self.task_detector = mp_vision.FaceDetector.create_from_options(options)
+            except Exception:
+                self.task_detector = None
+
+        if self.task_detector is None:
+            xml_path = Path("data/models/haarcascade_frontalface_default.xml")
+            if xml_path.exists():
+                self.cascade = cv2.CascadeClassifier(str(xml_path))
+            else:
+                self.cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+    def process(self, rgb_image: np.ndarray) -> _DetectionResults:
+        img_h, img_w = rgb_image.shape[:2]
+        if self.task_detector is not None:
+            try:
+                mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+                res = self.task_detector.detect(mp_img)
+                detections = []
+                for d in res.detections:
+                    score = float(d.categories[0].score) if d.categories else 0.95
+                    if score >= self.min_detection_confidence:
+                        bbox = _BBox(
+                            xmin=float(d.bounding_box.origin_x) / img_w,
+                            ymin=float(d.bounding_box.origin_y) / img_h,
+                            width=float(d.bounding_box.width) / img_w,
+                            height=float(d.bounding_box.height) / img_h,
+                        )
+                        detections.append(_Detection(bbox, score=score))
+                return _DetectionResults(detections)
+            except Exception:
+                pass
+
+        if self.cascade is not None:
+            gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
+            faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+            detections = []
+            for (x, y, w, h) in faces:
+                bbox = _BBox(
+                    xmin=float(x) / img_w,
+                    ymin=float(y) / img_h,
+                    width=float(w) / img_w,
+                    height=float(h) / img_h,
+                )
+                detections.append(_Detection(bbox, score=0.92))
+            return _DetectionResults(detections)
+
+        return _DetectionResults([])
+
+    def close(self):
+        if self.task_detector is not None:
+            try:
+                self.task_detector.close()
+            except Exception:
+                pass
+            self.task_detector = None
+
+
 class FaceProcessor:
-    """BlazeFace-powered face processor for bounding box extraction and validation."""
+    """BlazeFace/OpenCV face processor for bounding box extraction and validation."""
 
     def __init__(
         self,
@@ -90,13 +187,20 @@ class FaceProcessor:
         self.margin = margin
         self.model_selection = model_selection
 
-        self._mp_face_detection = mp.solutions.face_detection
-        self._detector: mp.solutions.face_detection.FaceDetection | None = (
-            self._mp_face_detection.FaceDetection(
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_detection"):
+            self._mp_face_detection = mp.solutions.face_detection
+            self._detector = (
+                self._mp_face_detection.FaceDetection(
+                    min_detection_confidence=self.min_detection_confidence,
+                    model_selection=self.model_selection,
+                )
+            )
+        else:
+            self._mp_face_detection = None
+            self._detector = _FallbackFaceDetector(
                 min_detection_confidence=self.min_detection_confidence,
                 model_selection=self.model_selection,
             )
-        )
 
     def __enter__(self) -> FaceProcessor:
         """Context manager entry point."""

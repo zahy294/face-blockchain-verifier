@@ -3,6 +3,7 @@
 import os
 import json
 import time
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
@@ -63,9 +64,19 @@ class BlockchainNotary:
         if os.getenv("USE_FALLBACK_LEDGER") == "0" or os.getenv("RPC_STRICT") == "1":
             use_fallback_ledger = False
 
-        self.rpc_url = rpc_url or os.getenv("RPC_URL") or os.getenv("WEB3_PROVIDER_URI")
-        self.private_key = private_key or os.getenv("PRIVATE_KEY")
-        self.contract_address = contract_address or os.getenv("CONTRACT_ADDRESS")
+        raw_rpc = rpc_url or os.getenv("RPC_URL", "http://127.0.0.1:8545")
+        if raw_rpc:
+            raw_rpc = raw_rpc.strip("\"' ")
+            if "(" in raw_rpc and raw_rpc.endswith(")"):
+                raw_rpc = raw_rpc.split("(")[-1].rstrip(")")
+        self.rpc_url = raw_rpc
+
+        raw_pk = private_key or os.getenv("PRIVATE_KEY")
+        self.private_key = raw_pk.strip("\"' ") if raw_pk else None
+
+        raw_contract = contract_address or os.getenv("CONTRACT_ADDRESS")
+        self.contract_address = raw_contract.strip("\"' ") if raw_contract else None
+
         self.use_fallback_ledger = use_fallback_ledger
         self.ledger_file = DEFAULT_LEDGER_FILE
         self.ledger_file.parent.mkdir(parents=True, exist_ok=True)
@@ -80,11 +91,32 @@ class BlockchainNotary:
         """Initializes Web3 provider and account credentials if configured."""
         if self.rpc_url:
             try:
-                self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={'timeout': 8}))
-                if not self.w3.is_connected():
+                request_kwargs = {'timeout': 10, 'proxies': {'http': None, 'https': None}}
+                self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs=request_kwargs))
+
+                is_connected = False
+                conn_err = None
+                try:
+                    is_connected = self.w3.is_connected(show_traceback=True)
+                except TypeError:
+                    is_connected = self.w3.is_connected()
+                except Exception as e:
+                    conn_err = e
+
+                if not is_connected:
+                    if conn_err is None:
+                        try:
+                            self.w3.eth.get_block_number()
+                        except Exception as probe_e:
+                            conn_err = probe_e
+
+                    err_msg = f"Unable to connect to Ethereum RPC endpoint: {self.rpc_url}"
+                    if conn_err:
+                        err_msg += f"\nUnderlying error: {conn_err}"
+                    traceback.print_exc()
                     self.w3 = None
                     if not self.use_fallback_ledger:
-                        raise RPCConnectionError(f"Unable to connect to Ethereum RPC endpoint: {self.rpc_url}")
+                        raise RPCConnectionError(err_msg)
                 else:
                     chain_id = self.w3.eth.chain_id
                     network_map = {
@@ -96,7 +128,10 @@ class BlockchainNotary:
                         31337: "Local Devnet (Anvil/Hardhat)",
                     }
                     self.network_name = network_map.get(chain_id, f"EVM Chain (ID: {chain_id})")
+            except RPCConnectionError:
+                raise
             except Exception as e:
+                traceback.print_exc()
                 self.w3 = None
                 if not self.use_fallback_ledger:
                     raise RPCConnectionError(f"RPC connection failed: {str(e)}")
@@ -104,8 +139,8 @@ class BlockchainNotary:
         if self.private_key:
             try:
                 self.account = Account.from_key(self.private_key)
-            except Exception:
-                pass
+            except Exception as e:
+                traceback.print_exc()
 
     def _load_ledger(self) -> Dict[str, Any]:
         """Loads local JSON ledger data."""
